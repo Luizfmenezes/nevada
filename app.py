@@ -7,16 +7,16 @@ from datetime import date
 # 1. CONFIGURAÇÕES DA PÁGINA E BANCO DE DADOS
 # ==========================================
 st.set_page_config(
-    page_title="Gestão de Visitas e RR", 
+    page_title="Sistema de Gestão Operacional", 
     page_icon="🛡️", 
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
 # ATENÇÃO: Substitua pelas suas credenciais do Supabase
 SUPABASE_URL = "https://uydnjzjefwqltvhbbscs.supabase.co"
 SUPABASE_KEY = "sb_publishable_ehhX5M3x4pwxvQ1KDye56g_rZqJJLxr"
 
-# Inicializa a conexão com o banco de forma cacheada para ficar rápido
 @st.cache_resource
 def init_connection():
     return create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -24,104 +24,166 @@ def init_connection():
 supabase: Client = init_connection()
 
 # ==========================================
-# 2. FUNÇÕES DE DADOS
+# 2. LISTAS E PARÂMETROS
 # ==========================================
-def carregar_dados(data_selecionada, turno_selecionado):
-    """Busca os dados no Supabase baseados nos filtros do usuário"""
-    query = supabase.table("visitas_operacionais").select("*").eq("data", str(data_selecionada))
-    
-    if turno_selecionado != "Todos":
-        query = query.eq("turno", turno_selecionado)
-        
-    resposta = query.execute()
+SETORES_PATRIMONIAL = [
+    "S.Águia", "S.Arco", "S.Delta", "S.Flecha", "S.Extremo", 
+    "S.Rmc", "Bombeiros SP", "S.Extrema MG", "S.Curitiba", "S.Rio de Janeiro"
+]
+
+SETORES_FACILITIES = [
+    "F.Águia", "F.Arco + F.Extremo", "F.Delta + F.Flecha", 
+    "F.Curitiba", "F.Rio de Janeiro"
+]
+
+# ==========================================
+# 3. FUNÇÕES DE BANCO DE DADOS (RR)
+# ==========================================
+def carregar_rr(data_selecionada):
+    """Busca apenas os dados de RR para a data selecionada"""
+    resposta = supabase.table("visitas_operacionais").select("*") \
+        .eq("data", str(data_selecionada)) \
+        .eq("tipo", "RR") \
+        .execute()
     return pd.DataFrame(resposta.data)
 
-def salvar_alteracoes(df_original, df_editado):
-    """Compara o antes e depois e envia apenas o que mudou para o Supabase"""
-    alteracoes = 0
-    for index, row in df_editado.iterrows():
-        valor_original = df_original.loc[index, 'realizado']
-        valor_novo = row['realizado']
-        
-        if valor_original != valor_novo:
-            # Envia o UPDATE (atualização) para o banco online
-            supabase.table("visitas_operacionais").update({
-                "realizado": int(valor_novo)
-            }).eq("id", row['id']).execute()
-            alteracoes += 1
-            
-    return alteracoes
+def incluir_rr(data_rr, setor, meta, realizado):
+    """Insere um novo registro de RR no banco"""
+    supabase.table("visitas_operacionais").insert({
+        "data": str(data_rr),
+        "setor": setor,
+        "turno": "N/A", # RR não especificou turno inicialmente
+        "tipo": "RR",
+        "meta": meta,
+        "realizado": realizado
+    }).execute()
+
+def excluir_rr(id_registro):
+    """Exclui um registro baseado no ID"""
+    supabase.table("visitas_operacionais").delete().eq("id", id_registro).execute()
+
 
 # ==========================================
-# 3. INTERFACE DO USUÁRIO (FRONTEND)
+# 4. INTERFACE DO USUÁRIO (FRONTEND)
 # ==========================================
-st.title("🛡️ Painel de Visitas Operacionais e RR's")
+
+# Estilização Global Customizada (Opcional para dar cara de sistema)
+st.markdown("""
+    <style>
+    .metric-card {
+        background-color: #f8f9fa;
+        border-radius: 10px;
+        padding: 15px;
+        box-shadow: 2px 2px 5px rgba(0,0,0,0.05);
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+st.title("🛡️ Sistema de Gestão Operacional")
 st.markdown("---")
 
-# Barra lateral para Filtros
-st.sidebar.header("Filtros de Pesquisa")
-data_filtro = st.sidebar.date_input("Data da Visita", date.today())
-turno_filtro = st.sidebar.selectbox("Turno", ["Todos", "Diurno", "Noturno"])
+# ---------------- BARRA LATERAL ----------------
+st.sidebar.image("https://cdn-icons-png.flaticon.com/512/2830/2830305.png", width=80)
+st.sidebar.header("Filtros Globais")
+st.sidebar.caption("As datas selecionadas aqui refletem em todas as abas do sistema.")
+data_filtro = st.sidebar.date_input("📅 Selecione a Data", date.today())
 
-# Carrega os dados com base nos filtros
-df_atual = carregar_dados(data_filtro, turno_filtro)
 
-if df_atual.empty:
-    st.warning(f"Nenhum registro encontrado para a data {data_filtro.strftime('%d/%m/%Y')} e turno {turno_filtro}.")
-    st.info("💡 Dica: Certifique-se de que as metas do dia foram inseridas no banco de dados.")
-else:
-    # --- Seção de KPIs ---
-    total_meta = df_atual['meta'].sum()
-    total_realizado = df_atual['realizado'].sum()
-    pct_conclusao = (total_realizado / total_meta * 100) if total_meta > 0 else 0
+# ---------------- NAVEGAÇÃO POR ABAS ----------------
+aba_rr, aba_visitas = st.tabs(["📋 Controle de RR", "🛡️ Visitas Operacionais"])
+
+# ==========================================
+# ABA 1: CONTROLE DE RR
+# ==========================================
+with aba_rr:
+    
+    # Carrega dados do dia
+    df_rr = carregar_rr(data_filtro)
+    
+    # --- RESUMO EXECUTIVO (KPIs) ---
+    st.subheader(f"📊 Resumo Diário (RR) - {data_filtro.strftime('%d/%m/%Y')}")
+    
+    total_meta = int(df_rr['meta'].sum()) if not df_rr.empty else 0
+    total_realizado = int(df_rr['realizado'].sum()) if not df_rr.empty else 0
+    saldo = total_meta - total_realizado
 
     col1, col2, col3 = st.columns(3)
-    col1.metric("🎯 Total Meta Diária", total_meta)
-    col2.metric("✅ Total Realizado", total_realizado)
-    col3.metric("📊 Conclusão (%)", f"{pct_conclusao:.1f}%")
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    # --- Seção da Grade Editável ---
-    st.subheader("📝 Lançamento Rápido")
-    st.write("Altere os valores na coluna **Realizado** e clique em Sincronizar.")
-
-    # Configuração das colunas (Bloqueando o que não pode ser editado)
-    configuracao_colunas = {
-        "id": None, # Esconde o ID do banco
-        "ultima_atualizacao": None, # Esconde a data de atualização
-        "data": st.column_config.DateColumn("Data", disabled=True),
-        "setor": st.column_config.TextColumn("Setor/Unidade", disabled=True),
-        "turno": st.column_config.TextColumn("Turno", disabled=True),
-        "tipo": st.column_config.TextColumn("Tipo", disabled=True),
-        "meta": st.column_config.NumberColumn("Meta", disabled=True),
-        "realizado": st.column_config.NumberColumn(
-            "Realizado (Clique para Editar) ✏️", 
-            min_value=0, 
-            step=1,
-            required=True
-        )
-    }
-
-    # Renderiza a grade
-    df_editado = st.data_editor(
-        df_atual,
-        column_config=configuracao_colunas,
-        hide_index=True,
-        use_container_width=True,
-        key="editor_visitas"
-    )
-
-    # --- Botão de Sincronismo ---
-    st.markdown("<br>", unsafe_allow_html=True)
-    col_btn, _ = st.columns([1, 4]) # Botão alinhado à esquerda
+    with col1:
+        st.metric(label="🎯 Meta Total do Dia", value=total_meta)
+    with col2:
+        st.metric(label="✅ Total Realizado", value=total_realizado)
+    with col3:
+        # Mostra o saldo. Se for negativo (excedeu a meta), fica verde. Se positivo (falta), fica vermelho.
+        st.metric(label="⚖️ Saldo (Meta - Realizado)", value=saldo, delta=f"Faltam {saldo}" if saldo > 0 else "Meta Atingida", delta_color="inverse")
     
-    with col_btn:
-        if st.button("🔄 Sincronizar Alterações", type="primary", use_container_width=True):
-            with st.spinner("Salvando no Supabase..."):
-                qtd_alterada = salvar_alteracoes(df_atual, df_editado)
-                
-            if qtd_alterada > 0:
-                st.success(f"Sucesso! {qtd_alterada} registro(s) atualizado(s) em toda a rede.")
-                st.balloons()
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # --- PAINÉIS DE OPERAÇÃO (CRUD) ---
+    col_add, col_view = st.columns([1, 1.5], gap="large")
+
+    # PAINEL DE INCLUSÃO
+    with col_add:
+        with st.container(border=True):
+            st.markdown("#### ➕ Incluir Novo Registro (RR)")
+            
+            # Seleção de Área altera a lista de setores
+            area_selecionada = st.radio("Selecione a Área", ["Patrimonial", "Facilities"], horizontal=True)
+            opcoes_setor = SETORES_PATRIMONIAL if area_selecionada == "Patrimonial" else SETORES_FACILITIES
+            
+            setor_input = st.selectbox("Setor / Unidade", opcoes_setor)
+            
+            col_m, col_r = st.columns(2)
+            meta_input = col_m.number_input("Meta Diária", min_value=0, step=1, value=0)
+            realizado_input = col_r.number_input("Realizado", min_value=0, step=1, value=0)
+            
+            if st.button("Salvar Registro", type="primary", use_container_width=True):
+                with st.spinner("Salvando..."):
+                    incluir_rr(data_filtro, setor_input, meta_input, realizado_input)
+                st.success("✅ Registro incluído com sucesso!")
+                st.rerun() # Recarrega a página para atualizar os gráficos
+
+    # PAINEL DE LEITURA E EXCLUSÃO
+    with col_view:
+        with st.container(border=True):
+            st.markdown("#### 📋 Registros Efetuados")
+            
+            if df_rr.empty:
+                st.info("Nenhum registro de RR encontrado para esta data.")
             else:
-                st.info("Nenhuma alteração foi feita na grade.")
+                # Mostra tabela formatada limpa (sem parecer excel de edição)
+                df_visual = df_rr[["setor", "meta", "realizado"]].copy()
+                df_visual.columns = ["Setor / Unidade", "Meta", "Realizado"]
+                st.dataframe(df_visual, use_container_width=True, hide_index=True)
+                
+                st.markdown("---")
+                st.markdown("#### 🗑️ Excluir Registro")
+                st.caption("Selecione um lançamento abaixo para excluí-lo do banco de dados.")
+                
+                # Cria uma lista formatada para o usuário saber o que está excluindo
+                opcoes_excluir = df_rr.apply(lambda x: f"{x['setor']} (Realizado: {x['realizado']}) | ID: {x['id']}", axis=1).tolist()
+                
+                selecao_excluir = st.selectbox("Selecione o registro:", ["Nenhum"] + opcoes_excluir, label_visibility="collapsed")
+                
+                if selecao_excluir != "Nenhum":
+                    if st.button("❌ Excluir Selecionado", type="secondary"):
+                        id_para_excluir = selecao_excluir.split("ID: ")[1]
+                        with st.spinner("Excluindo..."):
+                            excluir_rr(id_para_excluir)
+                        st.success("Registro excluído!")
+                        st.rerun()
+
+
+# ==========================================
+# ABA 2: VISITAS OPERACIONAIS (Em Construção)
+# ==========================================
+with aba_visitas:
+    st.subheader("🛡️ Visitas Operacionais")
+    
+    with st.container(border=True):
+        st.info("💡 **Aba preparada com sucesso!** Estou aguardando os seus parâmetros para configurar esta tela.")
+        st.write("Por favor, me informe:")
+        st.markdown("""
+        * Quais serão os **setores** desta aba?
+        * Vai ter divisão de **Turno** (Diurno/Noturno)?
+        * O preenchimento será individual como no RR ou em grade de edição rápida?
+        """)
