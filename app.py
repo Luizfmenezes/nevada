@@ -36,31 +36,67 @@ SETORES_FACILITIES = [
     "F.Curitiba", "F.Rio de Janeiro"
 ]
 
+# Cria um DataFrame base com todos os setores para forçar a exibição na grade
+df_base_setores = pd.DataFrame(
+    [{"Área": "🏢 Patrimonial", "setor": s} for s in SETORES_PATRIMONIAL] + 
+    [{"Área": "🛠️ Facilities", "setor": s} for s in SETORES_FACILITIES]
+)
+
 # ==========================================
 # 3. FUNÇÕES DE BANCO DE DADOS (RR)
 # ==========================================
 def carregar_rr(data_selecionada):
-    """Busca apenas os dados de RR para a data selecionada"""
+    """Busca os dados de RR do banco e faz um 'merge' com a lista de todos os setores."""
     resposta = supabase.table("visitas_operacionais").select("*") \
         .eq("data", str(data_selecionada)) \
         .eq("tipo", "RR") \
         .execute()
-    return pd.DataFrame(resposta.data)
+    
+    df_db = pd.DataFrame(resposta.data)
+    
+    # Cruza a lista base de setores com o que veio do banco
+    if not df_db.empty:
+        df_merged = pd.merge(df_base_setores, df_db, on="setor", how="left")
+        df_merged['meta'] = df_merged['meta'].fillna(0).astype(int)
+        df_merged['realizado'] = df_merged['realizado'].fillna(0).astype(int)
+    else:
+        # Se não tem nada no banco, cria a tabela zerada
+        df_merged = df_base_setores.copy()
+        df_merged['id'] = None
+        df_merged['meta'] = 0
+        df_merged['realizado'] = 0
+        
+    return df_merged
 
-def incluir_rr(data_rr, setor, meta, realizado):
-    """Insere um novo registro de RR no banco"""
-    supabase.table("visitas_operacionais").insert({
-        "data": str(data_rr),
-        "setor": setor,
-        "turno": "N/A", # RR não especificou turno inicialmente
-        "tipo": "RR",
-        "meta": meta,
-        "realizado": realizado
-    }).execute()
-
-def excluir_rr(id_registro):
-    """Exclui um registro baseado no ID"""
-    supabase.table("visitas_operacionais").delete().eq("id", id_registro).execute()
+def sincronizar_rr(data_rr, df_original, df_editado):
+    """Compara a tabela original com a editada e envia apenas as alterações para o Supabase"""
+    alteracoes = 0
+    for index, row in df_editado.iterrows():
+        orig = df_original.iloc[index]
+        
+        # Verifica se houve alguma mudança nos números
+        if row['meta'] != orig['meta'] or row['realizado'] != orig['realizado']:
+            
+            # Se não tem ID, é um registro novo para esse dia (INSERT)
+            if pd.isna(row['id']):
+                supabase.table("visitas_operacionais").insert({
+                    "data": str(data_rr),
+                    "setor": row['setor'],
+                    "turno": "N/A",
+                    "tipo": "RR",
+                    "meta": int(row['meta']),
+                    "realizado": int(row['realizado'])
+                }).execute()
+            # Se tem ID, atualiza o existente (UPDATE)
+            else:
+                supabase.table("visitas_operacionais").update({
+                    "meta": int(row['meta']),
+                    "realizado": int(row['realizado'])
+                }).eq("id", row['id']).execute()
+                
+            alteracoes += 1
+            
+    return alteracoes
 
 
 # ==========================================
@@ -93,18 +129,18 @@ data_filtro = st.sidebar.date_input("📅 Selecione a Data", date.today())
 aba_rr, aba_visitas = st.tabs(["📋 Controle de RR", "🛡️ Visitas Operacionais"])
 
 # ==========================================
-# ABA 1: CONTROLE DE RR
+# ABA 1: CONTROLE DE RR (Grade Otimizada)
 # ==========================================
 with aba_rr:
     
-    # Carrega dados do dia
+    # Carrega a tabela mestra (com dados do banco ou zerada)
     df_rr = carregar_rr(data_filtro)
     
     # --- RESUMO EXECUTIVO (KPIs) ---
     st.subheader(f"📊 Resumo Diário (RR) - {data_filtro.strftime('%d/%m/%Y')}")
     
-    total_meta = int(df_rr['meta'].sum()) if not df_rr.empty else 0
-    total_realizado = int(df_rr['realizado'].sum()) if not df_rr.empty else 0
+    total_meta = int(df_rr['meta'].sum())
+    total_realizado = int(df_rr['realizado'].sum())
     saldo = total_meta - total_realizado
 
     col1, col2, col3 = st.columns(3)
@@ -113,83 +149,51 @@ with aba_rr:
     with col2:
         st.metric(label="✅ Total Realizado", value=total_realizado)
     with col3:
-        st.metric(label="⚖️ Saldo (Meta - Realizado)", value=saldo, delta=f"Faltam {saldo}" if saldo > 0 else "Meta Atingida", delta_color="inverse")
+        st.metric(label="⚖️ Saldo (Meta - Realizado)", value=saldo, delta=f"Faltam {saldo}" if saldo > 0 else "Metas Batidas", delta_color="inverse")
     
+    st.markdown("---")
+
+    # --- GRADE DE EDIÇÃO RÁPIDA ---
+    st.markdown("#### 📝 Lançamento em Grade (Edição Rápida)")
+    st.caption("Clique diretamente nas colunas **Meta** ou **Realizado** para alterar os valores. As alterações só serão salvas após clicar em Sincronizar.")
+    
+    # Configuração visual das colunas da tabela
+    config_colunas = {
+        "id": None, # Oculta o ID interno
+        "data": None,
+        "tipo": None,
+        "turno": None,
+        "ultima_atualizacao": None,
+        "Área": st.column_config.TextColumn("Categoria", disabled=True, width="medium"),
+        "setor": st.column_config.TextColumn("Setor / Unidade", disabled=True, width="medium"),
+        "meta": st.column_config.NumberColumn("🎯 Meta (Clique para Editar)", min_value=0, step=1, required=True),
+        "realizado": st.column_config.NumberColumn("✅ Realizado (Clique para Editar)", min_value=0, step=1, required=True)
+    }
+
+    # Renderiza a grade editável na tela
+    df_editado = st.data_editor(
+        df_rr,
+        column_config=config_colunas,
+        hide_index=True,
+        use_container_width=True,
+        key="editor_rr"
+    )
+    
+    # --- BOTÃO DE SINCRONISMO ---
     st.markdown("<br>", unsafe_allow_html=True)
-
-    # --- PAINÉIS DE OPERAÇÃO (CRUD) ---
-    col_add, col_view = st.columns([1, 1.5], gap="large")
-
-    # PAINEL DE INCLUSÃO
-    with col_add:
-        with st.container(border=True):
-            st.markdown("#### ➕ Incluir Novo Registro (RR)")
-            
-            # Mostra todos os setores de uma vez no mesmo dropdown, organizados
-            opcoes_completas = ["--- Patrimonial ---"] + SETORES_PATRIMONIAL + ["--- Facilities ---"] + SETORES_FACILITIES
-            setor_input = st.selectbox("Setor / Unidade", opcoes_completas)
-            
-            col_m, col_r = st.columns(2)
-            meta_input = col_m.number_input("Meta Diária", min_value=0, step=1, value=0)
-            realizado_input = col_r.number_input("Realizado", min_value=0, step=1, value=0)
-            
-            if st.button("Salvar Registro", type="primary", use_container_width=True):
-                if setor_input.startswith("---"):
-                    st.warning("⚠️ Selecione um Setor válido (não selecione o título da categoria).")
-                else:
-                    with st.spinner("Salvando..."):
-                        incluir_rr(data_filtro, setor_input, meta_input, realizado_input)
-                    st.success("✅ Registro incluído com sucesso!")
-                    st.rerun()
-
-    # PAINEL DE LEITURA E EXCLUSÃO
-    with col_view:
-        with st.container(border=True):
-            st.markdown("#### 📋 Registros Efetuados")
-            
-            if df_rr.empty:
-                st.info("Nenhum registro de RR encontrado para esta data.")
+    col_btn, _ = st.columns([1, 3])
+    
+    with col_btn:
+        if st.button("🔄 Sincronizar Dados no Banco", type="primary", use_container_width=True):
+            with st.spinner("Analisando alterações e salvando no Supabase..."):
+                qtd_alteracoes = sincronizar_rr(data_filtro, df_rr, df_editado)
+                
+            if qtd_alteracoes > 0:
+                st.success(f"✅ Sincronizado! {qtd_alteracoes} registro(s) atualizados com sucesso.")
+                st.balloons()
             else:
-                # Cria a coluna Area para poder separar as tabelas visualmente
-                df_rr['Area'] = df_rr['setor'].apply(lambda x: 'Patrimonial' if x in SETORES_PATRIMONIAL else 'Facilities')
-                
-                df_pat = df_rr[df_rr['Area'] == 'Patrimonial'].copy()
-                df_fac = df_rr[df_rr['Area'] == 'Facilities'].copy()
-
-                col_tab1, col_tab2 = st.columns(2)
-                
-                with col_tab1:
-                    st.markdown("##### 🏢 Patrimonial")
-                    if not df_pat.empty:
-                        df_pat_view = df_pat[["setor", "meta", "realizado"]].rename(columns={"setor": "Setor", "meta": "Meta", "realizado": "Real"})
-                        st.dataframe(df_pat_view, hide_index=True, use_container_width=True)
-                    else:
-                        st.caption("Sem lançamentos de Patrimonial.")
-
-                with col_tab2:
-                    st.markdown("##### 🛠️ Facilities")
-                    if not df_fac.empty:
-                        df_fac_view = df_fac[["setor", "meta", "realizado"]].rename(columns={"setor": "Setor", "meta": "Meta", "realizado": "Real"})
-                        st.dataframe(df_fac_view, hide_index=True, use_container_width=True)
-                    else:
-                        st.caption("Sem lançamentos de Facilities.")
-                
-                st.markdown("---")
-                st.markdown("#### 🗑️ Excluir Registro")
-                st.caption("Selecione um lançamento abaixo para excluí-lo do banco de dados.")
-                
-                # Lista formatada para saber o que está apagando
-                opcoes_excluir = df_rr.apply(lambda x: f"[{x['Area'][:3]}] {x['setor']} (Real: {x['realizado']}) | ID: {x['id']}", axis=1).tolist()
-                
-                selecao_excluir = st.selectbox("Selecione o registro:", ["Nenhum"] + opcoes_excluir, label_visibility="collapsed")
-                
-                if selecao_excluir != "Nenhum":
-                    if st.button("❌ Excluir Selecionado", type="secondary"):
-                        id_para_excluir = selecao_excluir.split("ID: ")[1]
-                        with st.spinner("Excluindo..."):
-                            excluir_rr(id_para_excluir)
-                        st.success("Registro excluído!")
-                        st.rerun()
+                st.info("Nenhuma alteração foi detectada.")
+            st.rerun() # Atualiza a tela para refletir os novos KPIs
 
 
 # ==========================================
