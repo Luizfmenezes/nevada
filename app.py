@@ -67,7 +67,7 @@ def excluir_rr(id_registro):
 # 4. INTERFACE DO USUÁRIO (FRONTEND)
 # ==========================================
 
-# Estilização Global Customizada (Opcional para dar cara de sistema)
+# Estilização Global Customizada
 st.markdown("""
     <style>
     .metric-card {
@@ -113,7 +113,6 @@ with aba_rr:
     with col2:
         st.metric(label="✅ Total Realizado", value=total_realizado)
     with col3:
-        # Mostra o saldo. Se for negativo (excedeu a meta), fica verde. Se positivo (falta), fica vermelho.
         st.metric(label="⚖️ Saldo (Meta - Realizado)", value=saldo, delta=f"Faltam {saldo}" if saldo > 0 else "Meta Atingida", delta_color="inverse")
     
     st.markdown("<br>", unsafe_allow_html=True)
@@ -126,21 +125,22 @@ with aba_rr:
         with st.container(border=True):
             st.markdown("#### ➕ Incluir Novo Registro (RR)")
             
-            # Seleção de Área altera a lista de setores
-            area_selecionada = st.radio("Selecione a Área", ["Patrimonial", "Facilities"], horizontal=True)
-            opcoes_setor = SETORES_PATRIMONIAL if area_selecionada == "Patrimonial" else SETORES_FACILITIES
-            
-            setor_input = st.selectbox("Setor / Unidade", opcoes_setor)
+            # Mostra todos os setores de uma vez no mesmo dropdown, organizados
+            opcoes_completas = ["--- Patrimonial ---"] + SETORES_PATRIMONIAL + ["--- Facilities ---"] + SETORES_FACILITIES
+            setor_input = st.selectbox("Setor / Unidade", opcoes_completas)
             
             col_m, col_r = st.columns(2)
             meta_input = col_m.number_input("Meta Diária", min_value=0, step=1, value=0)
             realizado_input = col_r.number_input("Realizado", min_value=0, step=1, value=0)
             
             if st.button("Salvar Registro", type="primary", use_container_width=True):
-                with st.spinner("Salvando..."):
-                    incluir_rr(data_filtro, setor_input, meta_input, realizado_input)
-                st.success("✅ Registro incluído com sucesso!")
-                st.rerun() # Recarrega a página para atualizar os gráficos
+                if setor_input.startswith("---"):
+                    st.warning("⚠️ Selecione um Setor válido (não selecione o título da categoria).")
+                else:
+                    with st.spinner("Salvando..."):
+                        incluir_rr(data_filtro, setor_input, meta_input, realizado_input)
+                    st.success("✅ Registro incluído com sucesso!")
+                    st.rerun()
 
     # PAINEL DE LEITURA E EXCLUSÃO
     with col_view:
@@ -150,17 +150,36 @@ with aba_rr:
             if df_rr.empty:
                 st.info("Nenhum registro de RR encontrado para esta data.")
             else:
-                # Mostra tabela formatada limpa (sem parecer excel de edição)
-                df_visual = df_rr[["setor", "meta", "realizado"]].copy()
-                df_visual.columns = ["Setor / Unidade", "Meta", "Realizado"]
-                st.dataframe(df_visual, use_container_width=True, hide_index=True)
+                # Cria a coluna Area para poder separar as tabelas visualmente
+                df_rr['Area'] = df_rr['setor'].apply(lambda x: 'Patrimonial' if x in SETORES_PATRIMONIAL else 'Facilities')
+                
+                df_pat = df_rr[df_rr['Area'] == 'Patrimonial'].copy()
+                df_fac = df_rr[df_rr['Area'] == 'Facilities'].copy()
+
+                col_tab1, col_tab2 = st.columns(2)
+                
+                with col_tab1:
+                    st.markdown("##### 🏢 Patrimonial")
+                    if not df_pat.empty:
+                        df_pat_view = df_pat[["setor", "meta", "realizado"]].rename(columns={"setor": "Setor", "meta": "Meta", "realizado": "Real"})
+                        st.dataframe(df_pat_view, hide_index=True, use_container_width=True)
+                    else:
+                        st.caption("Sem lançamentos de Patrimonial.")
+
+                with col_tab2:
+                    st.markdown("##### 🛠️ Facilities")
+                    if not df_fac.empty:
+                        df_fac_view = df_fac[["setor", "meta", "realizado"]].rename(columns={"setor": "Setor", "meta": "Meta", "realizado": "Real"})
+                        st.dataframe(df_fac_view, hide_index=True, use_container_width=True)
+                    else:
+                        st.caption("Sem lançamentos de Facilities.")
                 
                 st.markdown("---")
                 st.markdown("#### 🗑️ Excluir Registro")
                 st.caption("Selecione um lançamento abaixo para excluí-lo do banco de dados.")
                 
-                # Cria uma lista formatada para o usuário saber o que está excluindo
-                opcoes_excluir = df_rr.apply(lambda x: f"{x['setor']} (Realizado: {x['realizado']}) | ID: {x['id']}", axis=1).tolist()
+                # Lista formatada para saber o que está apagando
+                opcoes_excluir = df_rr.apply(lambda x: f"[{x['Area'][:3]}] {x['setor']} (Real: {x['realizado']}) | ID: {x['id']}", axis=1).tolist()
                 
                 selecao_excluir = st.selectbox("Selecione o registro:", ["Nenhum"] + opcoes_excluir, label_visibility="collapsed")
                 
@@ -174,7 +193,7 @@ with aba_rr:
 
 
 # ==========================================
-# ABA 2: VISITAS OPERACIONAIS (Em Construção)
+# ABA 2: VISITAS OPERACIONAIS (Aguardando Parâmetros)
 # ==========================================
 with aba_visitas:
     st.subheader("🛡️ Visitas Operacionais")
