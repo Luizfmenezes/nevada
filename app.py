@@ -13,8 +13,8 @@ st.set_page_config(
 )
 
 # ATENÇÃO: Substitua pelas suas credenciais do Supabase
-SUPABASE_URL = "SUA_URL_AQUI"
-SUPABASE_KEY = "SUA_CHAVE_ANONIMA_AQUI"
+SUPABASE_URL = "https://uydnjzjefwqltvhbbscs.supabase.co"
+SUPABASE_KEY = "sb_publishable_ehhX5M3x4pwxvQ1KDye56g_rZqJJLxr"
 
 # Inicializa a conexão com o banco de forma cacheada para ficar rápido
 @st.cache_resource
