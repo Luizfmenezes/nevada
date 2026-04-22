@@ -136,6 +136,22 @@ with aba_rr:
     # Carrega a tabela mestra (com dados do banco ou zerada)
     df_rr = carregar_rr(data_filtro)
     
+    # --- CÁLCULOS DINÂMICOS (STATUS E SALDO) ---
+    df_rr['saldo'] = df_rr['realizado'] - df_rr['meta']
+    
+    def definir_status(row):
+        if row['meta'] == 0:
+            return "⚪ Sem Meta"
+        pct = row['realizado'] / row['meta']
+        if pct >= 1.0:
+            return "🟢 Atingida"
+        elif pct >= 0.8:
+            return "🟡 Atenção"
+        else:
+            return "🔴 Crítico"
+            
+    df_rr['status'] = df_rr.apply(definir_status, axis=1)
+    
     # --- RESUMO EXECUTIVO (KPIs) ---
     st.subheader(f"📊 Resumo Diário (RR) - {data_filtro.strftime('%d/%m/%Y')}")
     
@@ -166,16 +182,21 @@ with aba_rr:
         "ultima_atualizacao": None,
         "Área": st.column_config.TextColumn("Categoria", disabled=True, width="medium"),
         "setor": st.column_config.TextColumn("Setor / Unidade", disabled=True, width="medium"),
-        "meta": st.column_config.NumberColumn("🎯 Meta (Clique para Editar)", min_value=0, step=1, required=True),
-        "realizado": st.column_config.NumberColumn("✅ Realizado (Clique para Editar)", min_value=0, step=1, required=True)
+        "meta": st.column_config.NumberColumn("🎯 Meta (Editar)", min_value=0, step=1, required=True),
+        "realizado": st.column_config.NumberColumn("✅ Realizado (Editar)", min_value=0, step=1, required=True),
+        "saldo": st.column_config.NumberColumn("⚖️ Saldo", disabled=True),
+        "status": st.column_config.TextColumn("🚦 Status", disabled=True)
     }
 
-    # Renderiza a grade editável na tela
+    # Renderiza a grade editável na tela (height ajustado para caber tudo sem rolagem)
+    altura_tabela = (len(df_rr) * 36) + 40 
+
     df_editado = st.data_editor(
         df_rr,
         column_config=config_colunas,
         hide_index=True,
         use_container_width=True,
+        height=altura_tabela,
         key="editor_rr"
     )
     
